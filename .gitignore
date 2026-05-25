@@ -12,6 +12,7 @@ venv/
 # Media scratch
 *.pcm
 *.sync.json
+*.wav
 *.mp4
 *.mov
 *.mxf
