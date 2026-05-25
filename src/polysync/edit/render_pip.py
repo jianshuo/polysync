@@ -11,6 +11,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from .grade import resolve_lut, parse_rotate, _transpose_chain
+
 POSITIONS = {
     "bottom-right": ("W-w-{m}", "H-h-{m}"),
     "top-right":    ("W-w-{m}", "{m}"),
@@ -41,7 +43,7 @@ def pick_pip(row, K, coverage, mode="next"):
 def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
                width=1920, height=1080, fps=30, pip="bottom-right",
                pip_width=480, pip_margin=24, border_px=4, pip_pick="next",
-               run=True):
+               lut=None, log=None, rotate=None, run=True):
     plan = json.loads(Path(edl_path).read_text())
     inputs = plan["inputs"]
     deltas = plan.get("deltas", [0.0] * len(inputs))
@@ -49,6 +51,9 @@ def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
     audio_src = plan["audio_source"]
     K = len(inputs)
     coverage = plan.get("coverage", [[0.0, plan["duration_sec"]]] * K)
+    lut_path = resolve_lut(lut, log)
+    rot = parse_rotate(rotate)
+    grade = ("lut3d=%s," % lut_path) if lut_path else ""
 
     W, H = width, height
     pw = pip_width
@@ -70,10 +75,11 @@ def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
         s, e = row["start"], row["end"]
         main_label = "m%d" % i if K > 1 else "v%d" % i
         filters.append(
-            "[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS,"
+            "[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS,%s"
             "scale=%d:%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d[%s]"
-            % (cam, s, e, W, H, W, H, fps, main_label)
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,%ssetsar=1,fps=%d[%s]"
+            % (cam, s, e, _transpose_chain(rot.get(cam, 0)),
+               W, H, W, H, grade, fps, main_label)
         )
         if K == 1:
             continue
@@ -82,10 +88,11 @@ def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
             filters.append("[m%d]copy[v%d]" % (i, i))
             continue
         chain = (
-            "[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS,"
+            "[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS,%s"
             "scale=%d:%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,"
-            % (pip_cam, s, e, pw, ph, pw, ph)
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,%s"
+            % (pip_cam, s, e, _transpose_chain(rot.get(pip_cam, 0)),
+               pw, ph, pw, ph, grade)
         )
         if bw > 0:
             chain += "pad=%d:%d:%d:%d:white," % (pw + 2 * bw, ph + 2 * bw, bw, bw)
@@ -130,11 +137,16 @@ def main(argv=None):
     ap.add_argument("--pip-margin", type=int, default=24)
     ap.add_argument("--border-px", type=int, default=4)
     ap.add_argument("--pip-pick", choices=["next", "second-best"], default="next")
+    ap.add_argument("--lut", help="3D LUT (.cube) applied after downscale")
+    ap.add_argument("--log", help="built-in log->Rec.709 grade (e.g. slog3)")
+    ap.add_argument("--rotate", action="append",
+                    help="per-cam rotation CAM:DEG (90=CW), repeatable")
     args = ap.parse_args(argv)
     render_pip(args.edl, args.out, encoder=args.encoder, bitrate=args.bitrate,
                width=args.width, height=args.height, fps=args.fps, pip=args.pip,
                pip_width=args.pip_width, pip_margin=args.pip_margin,
-               border_px=args.border_px, pip_pick=args.pip_pick)
+               border_px=args.border_px, pip_pick=args.pip_pick,
+               lut=args.lut, log=args.log, rotate=args.rotate)
 
 
 if __name__ == "__main__":

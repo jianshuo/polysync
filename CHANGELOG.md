@@ -3,6 +3,26 @@
 All notable changes to polysync are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-05-26
+
+Render-side handling for raw camera footage — the hard-won lessons from a real
+Sony FX3/FX6 vertical shoot.
+
+### Added
+- `polysync.edit.grade` module: `make_slog3_709_lut` generates a Sony S-Log3 /
+  S-Gamut3.Cine → Rec.709 3D LUT; `segment_filter` builds per-shot filter chains.
+- `render-cuts` / `render-pip` new flags:
+  - `--log slog3` — convert flat S-Log3 footage to Rec.709 (auto-generates+caches the LUT).
+  - `--lut FILE.cube` — apply any 3D LUT.
+  - `--rotate CAM:DEG` (repeatable) — per-camera rotation for vertically-shot
+    cameras that wrote no rotation flag (e.g. FX6 turned on its side; 90 = CW).
+  - `--fill` (render-cuts) — crop-to-fill instead of letterbox-pad, for vertical
+    delivery (1080×1920) with no black bars.
+
+### Changed
+- LUT is applied **after** the downscale, not before — a 3D LUT on 4K is ~4× slower
+  than on 1080p for an identical result.
+
 ## [0.1.0] — 2026-05-25
 
 Initial release. Extracted and refactored from the `wjs-syncing-multicam` and

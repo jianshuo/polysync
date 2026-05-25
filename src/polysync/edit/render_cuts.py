@@ -2,21 +2,30 @@
 
 Applies each input's `delta` via `ffmpeg -itsoffset` so EDL times (reference
 timeline) work directly inside the filter graph — originals are read untouched.
+
+Raw footage usually needs `--log slog3` (Sony S-Log3 -> Rec.709 grade) and, for
+vertically-shot cameras with no rotation flag, `--rotate cam:90`. For vertical
+delivery (小红书 / Reels / Shorts) pass `--width 1080 --height 1920 --fill`.
 """
 import argparse
 import json
 import subprocess
 from pathlib import Path
 
+from .grade import resolve_lut, parse_rotate, segment_filter
+
 
 def render_cuts(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
-                width=1920, height=1080, fps=30, run=True):
+                width=1920, height=1080, fps=30, lut=None, log=None,
+                rotate=None, fill=False, run=True):
     plan = json.loads(Path(edl_path).read_text())
     inputs = plan["inputs"]
     deltas = plan.get("deltas", [0.0] * len(inputs))
     edl = plan["edl"]
     audio_src = plan["audio_source"]
     W, H = width, height
+    lut_path = resolve_lut(lut, log)
+    rot = parse_rotate(rotate)
 
     cmd = ["ffmpeg", "-nostdin", "-y"]
     for src, dlt in zip(inputs, deltas):
@@ -24,14 +33,11 @@ def render_cuts(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
             cmd.extend(["-itsoffset", "%.6f" % dlt])
         cmd.extend(["-i", src])
 
-    filters = []
-    for i, row in enumerate(edl):
-        filters.append(
-            "[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS,"
-            "scale=%d:%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d[v%d]"
-            % (row["cam"], row["start"], row["end"], W, H, W, H, fps, i)
-        )
+    filters = [
+        segment_filter(row["cam"], row["start"], row["end"], i, W, H, fps,
+                       rotate_deg=rot.get(row["cam"], 0), lut=lut_path, pip=fill)
+        for i, row in enumerate(edl)
+    ]
     concat = "".join("[v%d]" % i for i in range(len(edl)))
     filters.append("%sconcat=n=%d:v=1:a=0[vout]" % (concat, len(edl)))
     fc = ";".join(filters)
@@ -63,9 +69,16 @@ def main(argv=None):
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--lut", help="3D LUT (.cube) applied after downscale")
+    ap.add_argument("--log", help="built-in log->Rec.709 grade (e.g. slog3)")
+    ap.add_argument("--rotate", action="append",
+                    help="per-cam rotation CAM:DEG (90=CW), repeatable")
+    ap.add_argument("--fill", action="store_true",
+                    help="crop to fill instead of letterbox-pad (use for vertical)")
     args = ap.parse_args(argv)
     render_cuts(args.edl, args.out, encoder=args.encoder, bitrate=args.bitrate,
-                width=args.width, height=args.height, fps=args.fps)
+                width=args.width, height=args.height, fps=args.fps,
+                lut=args.lut, log=args.log, rotate=args.rotate, fill=args.fill)
 
 
 if __name__ == "__main__":

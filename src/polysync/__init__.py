@@ -11,7 +11,7 @@ Public API:
 from .sync import compute_sync, SyncResult, SyncError
 from .sidecar import read_sidecar, write_sidecar, sidecar_path, SCHEMA_VERSION
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "compute_sync", "SyncResult", "SyncError",
     "read_sidecar", "write_sidecar", "sidecar_path", "SCHEMA_VERSION",
