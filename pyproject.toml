@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polysync"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multicam audio sync and director-style auto-edit — align N angles of one event by audio cross-correlation, then cut/PiP them into one MP4. Reversible sidecars, never re-encodes the originals."
 readme = "README.md"
 requires-python = ">=3.9"

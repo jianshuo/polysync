@@ -10,28 +10,42 @@ delivery (小红书 / Reels / Shorts) pass `--width 1080 --height 1920 --fill`.
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .grade import resolve_lut, parse_rotate, segment_filter
+from .audiomix import build_ducked_audio
 
 
 def render_cuts(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
                 width=1920, height=1080, fps=30, lut=None, log=None,
-                rotate=None, fill=False, run=True):
+                rotate=None, fill=False, duck_audio=False, duck_db=-18.0,
+                audio_cams=None, run=True):
     plan = json.loads(Path(edl_path).read_text())
     inputs = plan["inputs"]
     deltas = plan.get("deltas", [0.0] * len(inputs))
     edl = plan["edl"]
     audio_src = plan["audio_source"]
+    duration = plan["duration_sec"]
     W, H = width, height
     lut_path = resolve_lut(lut, log)
     rot = parse_rotate(rotate)
+
+    # Speaker-gated soundtrack: build a cleaned wav up front, use it as the audio.
+    ducked_wav = None
+    if duck_audio:
+        coverage = plan.get("coverage", [[0.0, duration]] * len(inputs))
+        ducked_wav = str(Path(tempfile.mkdtemp()) / "ducked.wav")
+        build_ducked_audio(inputs, deltas, coverage, duration, ducked_wav,
+                           duck_db=duck_db, audio_cams=audio_cams)
 
     cmd = ["ffmpeg", "-nostdin", "-y"]
     for src, dlt in zip(inputs, deltas):
         if abs(dlt) > 1e-9:
             cmd.extend(["-itsoffset", "%.6f" % dlt])
         cmd.extend(["-i", src])
+    if ducked_wav:
+        cmd.extend(["-i", ducked_wav])           # extra input, already ref-aligned
 
     filters = [
         segment_filter(row["cam"], row["start"], row["end"], i, W, H, fps,
@@ -42,13 +56,16 @@ def render_cuts(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
     filters.append("%sconcat=n=%d:v=1:a=0[vout]" % (concat, len(edl)))
     fc = ";".join(filters)
 
-    audio_offset = edl[0]["start"] if edl else 0.0
-    duration = plan["duration_sec"]
-    fc += (";[%d:a:0]atrim=start=%s:duration=%s,asetpts=PTS-STARTPTS[aout]"
-           % (audio_src, audio_offset, duration))
+    cmd.extend(["-filter_complex", fc, "-map", "[vout]"])
+    if ducked_wav:
+        cmd.extend(["-map", "%d:a:0" % len(inputs)])
+    else:
+        audio_offset = edl[0]["start"] if edl else 0.0
+        fc2 = ("[%d:a:0]atrim=start=%s:duration=%s,asetpts=PTS-STARTPTS[aout]"
+               % (audio_src, audio_offset, duration))
+        cmd[cmd.index("-filter_complex") + 1] = fc + ";" + fc2
+        cmd.extend(["-map", "[aout]"])
     cmd.extend([
-        "-filter_complex", fc,
-        "-map", "[vout]", "-map", "[aout]",
         "-t", str(duration),
         "-c:v", encoder, "-b:v", bitrate, "-tag:v", "hvc1",
         "-c:a", "aac", "-b:a", "192k",
@@ -75,10 +92,20 @@ def main(argv=None):
                     help="per-cam rotation CAM:DEG (90=CW), repeatable")
     ap.add_argument("--fill", action="store_true",
                     help="crop to fill instead of letterbox-pad (use for vertical)")
+    ap.add_argument("--duck-audio", action="store_true",
+                    help="speaker-gated soundtrack: keep the active speaker's mic, "
+                         "duck the rest (cleaner than a single-cam mic for interviews)")
+    ap.add_argument("--duck-db", type=float, default=-18.0,
+                    help="level of ducked (inactive) mics, dB (default -18)")
+    ap.add_argument("--audio-cams",
+                    help="comma-separated cam indices to gate among (e.g. 0,1) — "
+                         "exclude wide/room mics; default = auto by level")
     args = ap.parse_args(argv)
+    cams = [int(x) for x in args.audio_cams.split(",")] if args.audio_cams else None
     render_cuts(args.edl, args.out, encoder=args.encoder, bitrate=args.bitrate,
                 width=args.width, height=args.height, fps=args.fps,
-                lut=args.lut, log=args.log, rotate=args.rotate, fill=args.fill)
+                lut=args.lut, log=args.log, rotate=args.rotate, fill=args.fill,
+                duck_audio=args.duck_audio, duck_db=args.duck_db, audio_cams=cams)
 
 
 if __name__ == "__main__":

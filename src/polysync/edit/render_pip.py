@@ -9,9 +9,11 @@ Per-segment EDL rows may carry a `pip` field (cam index) to override the picker.
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .grade import resolve_lut, parse_rotate, _transpose_chain
+from .audiomix import build_ducked_audio
 
 POSITIONS = {
     "bottom-right": ("W-w-{m}", "H-h-{m}"),
@@ -43,17 +45,25 @@ def pick_pip(row, K, coverage, mode="next"):
 def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
                width=1920, height=1080, fps=30, pip="bottom-right",
                pip_width=480, pip_margin=24, border_px=4, pip_pick="next",
-               lut=None, log=None, rotate=None, run=True):
+               lut=None, log=None, rotate=None, duck_audio=False, duck_db=-18.0,
+               audio_cams=None, run=True):
     plan = json.loads(Path(edl_path).read_text())
     inputs = plan["inputs"]
     deltas = plan.get("deltas", [0.0] * len(inputs))
     edl = plan["edl"]
     audio_src = plan["audio_source"]
+    duration = plan["duration_sec"]
     K = len(inputs)
-    coverage = plan.get("coverage", [[0.0, plan["duration_sec"]]] * K)
+    coverage = plan.get("coverage", [[0.0, duration]] * K)
     lut_path = resolve_lut(lut, log)
     rot = parse_rotate(rotate)
     grade = ("lut3d=%s," % lut_path) if lut_path else ""
+
+    ducked_wav = None
+    if duck_audio:
+        ducked_wav = str(Path(tempfile.mkdtemp()) / "ducked.wav")
+        build_ducked_audio(inputs, deltas, coverage, duration, ducked_wav,
+                           duck_db=duck_db, audio_cams=audio_cams)
 
     W, H = width, height
     pw = pip_width
@@ -68,6 +78,8 @@ def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
         if abs(dlt) > 1e-9:
             cmd.extend(["-itsoffset", "%.6f" % dlt])
         cmd.extend(["-i", src])
+    if ducked_wav:
+        cmd.extend(["-i", ducked_wav])           # extra input, already ref-aligned
 
     filters = []
     for i, row in enumerate(edl):
@@ -103,14 +115,19 @@ def render_pip(edl_path, out, encoder="hevc_videotoolbox", bitrate="12M",
 
     concat = "".join("[v%d]" % i for i in range(len(edl)))
     filters.append("%sconcat=n=%d:v=1:a=0[vout]" % (concat, len(edl)))
-    audio_offset = edl[0]["start"] if edl else 0.0
-    dur = plan["duration_sec"]
+    dur = duration
     fc = ";".join(filters)
-    fc += (";[%d:a:0]atrim=start=%s:duration=%s,asetpts=PTS-STARTPTS[aout]"
-           % (audio_src, audio_offset, dur))
+    cmd.extend(["-filter_complex", None, "-map", "[vout]"])  # fc filled below
+    if ducked_wav:
+        cmd[cmd.index("-filter_complex") + 1] = fc
+        cmd.extend(["-map", "%d:a:0" % K])
+    else:
+        audio_offset = edl[0]["start"] if edl else 0.0
+        fc += (";[%d:a:0]atrim=start=%s:duration=%s,asetpts=PTS-STARTPTS[aout]"
+               % (audio_src, audio_offset, dur))
+        cmd[cmd.index("-filter_complex") + 1] = fc
+        cmd.extend(["-map", "[aout]"])
     cmd.extend([
-        "-filter_complex", fc,
-        "-map", "[vout]", "-map", "[aout]",
         "-t", str(dur),
         "-c:v", encoder, "-b:v", bitrate, "-tag:v", "hvc1",
         "-c:a", "aac", "-b:a", "192k",
@@ -141,12 +158,20 @@ def main(argv=None):
     ap.add_argument("--log", help="built-in log->Rec.709 grade (e.g. slog3)")
     ap.add_argument("--rotate", action="append",
                     help="per-cam rotation CAM:DEG (90=CW), repeatable")
+    ap.add_argument("--duck-audio", action="store_true",
+                    help="speaker-gated soundtrack (keep active speaker's mic, duck rest)")
+    ap.add_argument("--duck-db", type=float, default=-18.0,
+                    help="level of ducked (inactive) mics, dB (default -18)")
+    ap.add_argument("--audio-cams",
+                    help="comma-separated cam indices to gate among (e.g. 0,1)")
     args = ap.parse_args(argv)
+    cams = [int(x) for x in args.audio_cams.split(",")] if args.audio_cams else None
     render_pip(args.edl, args.out, encoder=args.encoder, bitrate=args.bitrate,
                width=args.width, height=args.height, fps=args.fps, pip=args.pip,
                pip_width=args.pip_width, pip_margin=args.pip_margin,
                border_px=args.border_px, pip_pick=args.pip_pick,
-               lut=args.lut, log=args.log, rotate=args.rotate)
+               lut=args.lut, log=args.log, rotate=args.rotate,
+               duck_audio=args.duck_audio, duck_db=args.duck_db, audio_cams=cams)
 
 
 if __name__ == "__main__":

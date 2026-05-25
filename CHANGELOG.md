@@ -3,6 +3,20 @@
 All notable changes to polysync are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-05-26
+
+### Added
+- **Speaker-gated soundtrack** (`polysync.edit.audiomix`): `--duck-audio` on
+  `render-cuts` / `render-pip`. Per moment it keeps the ACTIVE speaker's mic at
+  full level and ducks the rest (active speaker decided by each mic's energy
+  relative to its own baseline). Far cleaner than a single-cam mic for
+  interviews — kills the constant bleed/room buildup that loudness-norm pumps up.
+  `--duck-db` sets the ducked level (default -18 dB); finished with high-pass +
+  light FFT denoise + loudness-normalize.
+- `--audio-cams 0,1` — explicitly choose which mics to gate among, to exclude a
+  wide/room mic that sits at a similar level to a real speaker mic (level alone
+  can't separate a close lav from a near room mic).
+
 ## [0.2.0] — 2026-05-26
 
 Render-side handling for raw camera footage — the hard-won lessons from a real
