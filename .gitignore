@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Media scratch
+*.pcm
+*.sync.json
+*.mp4
+*.mov
+*.mxf
+!tests/**/*.sync.json
+
+# OS
+.DS_Store
